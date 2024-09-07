@@ -1,0 +1,91 @@
+# This is a basic workflow to help you get started with Actions
+
+name: Sign image (avbtool)
+
+# Controls when the workflow will run
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      BOOT_URL:
+        description: 'URL of the boot/recovery image you want to sign'
+        required: true
+        default: ''
+      VBM_URL:
+        description: 'URL of the vbmeta image in your device'
+        required: true
+        default: ''
+      TARGET:
+        description: 'Which partition you want to sign?'
+        required: true
+        default: 'boot'
+        type: choice
+        options:
+        - boot
+        - recovery
+      SIZE:
+        description: 'What is your boot/recovery PARTITION(not image) size?(size unit is bytes)'
+        required: true
+        default: '36700160'
+      VER:
+        description: 'What is your Android version?'
+        required: true
+        default: '8'
+        type: choice
+        options:
+        - 8
+        - 9
+        - 10
+        - 11
+        - 13
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "build"
+  build:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4
+      - name: Prepare envionment
+        run: |
+          git clone https://github.com/SebaUbuntu/AIK-Linux-mirror aik
+          sudo apt install python3 -y
+
+      - name: Get image
+        run: | 
+          wget ${{ github.event.inputs.BOOT_URL }} -O ./aik/${{ github.event.inputs.TARGET }}.img
+          wget ${{ github.event.inputs.VBM_URL }} -O ./avbtool/vbmeta.img
+          
+      - name: Remove invalid content in your image
+        run: |
+          ./unpackimg.sh ${{ github.event.inputs.TARGET }}.img
+          ./repackimg.sh
+          cp -v *-new.img ../avbtool/${{ github.event.inputs.TARGET }}.img
+        working-directory: aik
+
+      - name: Sign the image
+        run: |
+          echo "Generate vbmeta sign script..."
+          ./scriptgen vbmeta.img
+          chmod -v 755 sign_vbmeta.sh
+          echo "Sign vbmeta image..."
+          rm -v rsa4096_${{ github.event.inputs.TARGET }}_pub.bin
+          cp -v rsa4096_custom_pub.bin rsa4096_${{ github.event.inputs.TARGET }}_pub.bin
+          ./sign_vbmeta.sh
+          python vbmeta_pad_${{ github.event.inputs.VER }}_$(cat sign_vbmeta.sh |grep padding |cut -d' ' -f 2).py
+          echo "VBMeta signed!"
+          echo "Signing your ${{ github.event.inputs.TARGET }} image..."
+          python avbtool add_hash_footer --image ${{ github.event.inputs.TARGET }}.img --partition_name ${{ github.event.inputs.TARGET }} --partition_size ${{ github.event.inputs.SIZE }} --key rsa4096_vbmeta.pem --algorithm SHA256_RSA4096
+          echo "${{ github.event.inputs.TARGET }} image signed!"
+        working-directory: avbtool
+
+      - name: Upload to Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Signed image
+          path: |
+            avbtool/vbmeta-sign-custom.img
+            avbtool/${{ github.event.inputs.TARGET }}.img
